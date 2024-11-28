@@ -1,0 +1,107 @@
+const { Client } = require('@opensearch-project/opensearch');
+client = OpenSearch(
+    hosts=[{'host': 'search-rvrapidious-2xne6fu6abebslz6my4wyppg64.us-east-1.es.amazonaws.com', 'port': 443}],
+    http_auth=('raju@rapidious', '1raju@Rapidious'),
+    use_ssl=True,
+    verify_certs=True
+)
+
+def get_past_data(status_date, model, make, trim, inventory_age, lat, lon):
+    try:
+        distances = ["100miles", "250miles", "500miles", "1000miles", "2000miles", "10000miles"]
+        
+        # Construct geo-distance filters dynamically
+        geo_filters = {
+            f"{distance}_range": {
+                "geo_distance": {
+                    "distance": distance,
+                    "actual_listing_point": f"{lat},{lon}"
+                }
+            } for distance in distances
+        }
+
+        # Construct query
+        query_body = {
+            "size": 0,
+            "_source": [
+                "listing_city", "city", "msrp", "class", "dp_url", "engine", "exterior_color", "photo_link", "heading",
+                "price_to_market", "priceofftarget_stats_avg_price", "first_scraped_at", "status_date", "seller_name",
+                "latitude", "longitude", "state", "zip", "price", "vin", "point", "rprice", "stock_no", "year",
+                "make", "model", "trim", "year_modified", "make_updated", "model_updated", "trim_updated",
+                "stats_avg_price", "stats_count", "listing_point", "actual_seller_name"
+            ],
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "range": {
+                                "status_date": {
+                                    "gte": "now-6M/M",
+                                    "lte": status_date
+                                }
+                            }
+                        },
+                        { "range": { "inventory_age": { "gte": inventory_age } } },
+                        { "range": { "price": { "gt": -1 } } },
+                        { "term": { "model_updated.keyword": model } },
+                        { "term": { "make_updated.keyword": make } },
+                        { "term": { "trim_updated.keyword": trim } }
+                    ],
+                    "must_not": [
+                        { "term": { "make_updated.keyword": "nan" } },
+                        { "term": { "model_updated.keyword": "nan" } },
+                        { "term": { "price": 0 } },
+                        { "term": { "msrp": 0 } }
+                    ]
+                }
+            },
+            "aggs": {
+                "price_by_distance": {
+                    "filters": {
+                        "filters": geo_filters
+                    },
+                    "aggs": {
+                        "avg_price": {
+                            "avg": {
+                                "field": "price"
+                            }
+                        },
+                        "avg_discount": {
+                            "avg": {
+                                "script": {
+                                    "source": """
+                                    double msrp = Double.parseDouble(doc['msrp'].value.toString());
+                                    double price = Double.parseDouble(doc['price'].value.toString());
+                                    if (msrp != 0) {
+                                        return ((msrp - price) / msrp) * 100;
+                                    } else {
+                                        return 0;
+                                    }
+                                    """,
+                                    "lang": "painless"
+                                }
+                            }
+                        },
+                        "avg_dts": {
+                            "avg": {
+                                "script": {
+                                    "source": """
+                                    (doc['status_date'].getValue().toEpochSecond() - 
+                                    doc['first_scraped_at'].getValue().toEpochSecond())/86400
+                                    """
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        # Execute search query
+        response = client.search(index="rv-*", body=query_body)
+        return response["aggregations"]
+    
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+		
+module.exports = { get_past_data }
